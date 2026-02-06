@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tower Defense Game</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #f0f0f0; }
+        #gameCanvas { width: 800px; height: 600px; background: #fff; border: 2px solid #000; position: relative; overflow: hidden; }
+        .tower { width: 50px; height: 50px; background: green; position: absolute; }
+        .enemy { width: 30px; height: 30px; background: red; position: absolute; }
+    </style>
+</head>
+<body>
+    <h1>Tower Defense Game</h1>
+    <div id="gameCanvas"></div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        let enemies = [];
+
+        function createEnemy() {
+            const enemy = document.createElement('div');
+            enemy.className = 'enemy';
+            enemy.style.left = '0px';
+            enemy.style.top = Math.random() * 570 + 'px';
+            canvas.appendChild(enemy);
+            enemies.push(enemy);
+            moveEnemy(enemy);
+        }
+
+        function moveEnemy(enemy) {
+            let pos = 0;
+            const interval = setInterval(() => {
+                if (pos >= 800) {
+                    clearInterval(interval);
+                    canvas.removeChild(enemy);
+                    enemies.splice(enemies.indexOf(enemy), 1);
+                } else {
+                    pos += 2;
+                    enemy.style.left = pos + 'px';
+                }
+            }, 100);
+        }
+
+        setInterval(createEnemy, 1000);
+    </script>
+</body>
+</html>
