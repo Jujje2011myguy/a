@@ -5,45 +5,64 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tower Defense Game</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; background: #f0f0f0; }
-        #gameCanvas { width: 800px; height: 600px; background: #fff; border: 2px solid #000; position: relative; overflow: hidden; }
-        .tower { width: 50px; height: 50px; background: green; position: absolute; }
-        .enemy { width: 30px; height: 30px; background: red; position: absolute; }
+        body { font-family: Arial, sans-serif; background-color: #f4f4f4; }
+        #gameCanvas { border: 2px solid #000; background-color: #fff; }
+        #score { font-size: 24px; margin: 20px; }
     </style>
 </head>
 <body>
     <h1>Tower Defense Game</h1>
-    <div id="gameCanvas"></div>
+    <div id="score">Score: 0</div>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
     <script>
         const canvas = document.getElementById('gameCanvas');
-        let enemies = [];
+        const ctx = canvas.getContext('2d');
+        let score = 0;
 
-        function createEnemy() {
-            const enemy = document.createElement('div');
-            enemy.className = 'enemy';
-            enemy.style.left = '0px';
-            enemy.style.top = Math.random() * 570 + 'px';
-            canvas.appendChild(enemy);
-            enemies.push(enemy);
-            moveEnemy(enemy);
+        // Tower Types
+        const towers = {
+            basic: { power: 10, range: 50, cost: 100 },
+            sniper: { power: 20, range: 100, cost: 200 },
+            rapid: { power: 5, range: 40, cost: 150 },
+            heavy: { power: 50, range: 30, cost: 300 }
+        };
+
+        // Power-ups
+        const powerUps = {
+            goldBoost: { multiplier: 2, duration: 5000 },
+            speedBoost: { multiplier: 1.5, duration: 5000 },
+            shield: { duration: 10000 },
+            nuke: { damage: 100 }
+        };
+
+        // Enemy Varieties
+        const enemies = [
+            { health: 100, speed: 1 },
+            { health: 150, speed: 0.8 }
+        ];
+
+        // Boss Enemy
+        const boss = { health: 500, speed: 0.5 };
+
+        // Function to update score
+        function updateScore(points) {
+            score += points;
+            document.getElementById('score').innerText = 'Score: ' + score;
         }
 
-        function moveEnemy(enemy) {
-            let pos = 0;
-            const interval = setInterval(() => {
-                if (pos >= 800) {
-                    clearInterval(interval);
-                    canvas.removeChild(enemy);
-                    enemies.splice(enemies.indexOf(enemy), 1);
-                } else {
-                    pos += 2;
-                    enemy.style.left = pos + 'px';
-                }
-            }, 100);
+        // Function to draw towers and enemies
+        function drawGame() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Drawing logic goes here
+            updateScore(1); // Example score update
         }
 
-        setInterval(createEnemy, 1000);
+        // Game Loop
+        function gameLoop() {
+            drawGame();
+            requestAnimationFrame(gameLoop);
+        }
+        gameLoop();
     </script>
 </body>
 </html>
