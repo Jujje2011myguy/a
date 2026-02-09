@@ -1,0 +1,26 @@
+/* Main styles for enhanced tower defense */
+:root{
+  --bg:#071226;
+  --panel:rgba(255,255,255,0.04);
+  --accent:#4aa3ff;
+  --muted:#9fb0c8;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,system-ui,Arial;background:linear-gradient(180deg,var(--bg),#0b1a2b);color:#e6eef8}
+.topbar{display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:rgba(0,0,0,0.18)}
+.container{display:flex;gap:16px;padding:18px;width:1000px;max-width:98vw;margin:24px auto}
+#left-panel{flex:1}
+#right-panel{width:300px}
+.hud{display:flex;gap:12px;justify-content:space-between;margin-bottom:10px}
+.game-area{background:linear-gradient(180deg,#dff5ff22,#ffffff06);padding:10px;border-radius:8px}
+.panel{background:var(--panel);padding:8px;border-radius:8px;margin-bottom:10px}
+.small{font-size:13px;color:var(--muted)}
+button{padding:8px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer}
+button.small{padding:6px 8px;font-size:13px}
+#towerList{display:flex;flex-direction:column;gap:8px}
+.tower-btn{display:flex;gap:8px;align-items:center;padding:8px;border-radius:6px;background:rgba(0,0,0,0.12);cursor:pointer}
+.tower-btn.selected{outline:3px solid rgba(74,163,255,0.12)}
+footer{opacity:0.7;text-align:center;padding-bottom:20px}
+
+/* responsive */
+@media(max-width:900px){.container{flex-direction:column;padding:8px}#right-panel{width:100%}}
