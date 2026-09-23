@@ -4,24 +4,32 @@
  * How it works:
  * - Every request to your Worker's URL (e.g. https://yt.yourname.workers.dev/)
  *   is forwarded to the real blooket.com, with the response streamed back to you.
- * - Because the request originates from Cloudflare's network, a network that only
- *   blocks blooket.com directly will still let you reach your Worker's own domain.
- * - HTML/CSS/JS responses have their internal links rewritten so that further
- *   navigation also stays inside the proxy.
+ * - WebSocket connections (used for live game rounds / joining a game) are now
+ *   proxied too, by forwarding the Upgrade request straight through to upstream.
+ * - HTML/CSS/JS responses have their internal links rewritten (including ws://
+ *   and wss:// URLs) so that further navigation and socket connections also
+ *   stay inside the proxy.
  *
- * Limitations (read before relying on this):
- * - Blooket likely serves assets, API calls, and websocket traffic (live game
- *   rounds) from separate CDN/API subdomains. This proxy forwards subdomain
- *   requests too, but websocket connections may not work correctly through a
- *   plain HTTP fetch-based proxy like this one — that's a real risk, not just
- *   a maintenance footnote.
+ * READ THIS BEFORE USING:
+ * - Blooket sits behind Cloudflare itself. Requests from a Worker don't carry
+ *   the TLS/browser fingerprint a normal visitor has, so Blooket's own
+ *   anti-bot layer can serve a challenge page instead of the real site. If
+ *   the page still won't load after this update, that's almost certainly why,
+ *   and there's no reliable fix for it from inside a Worker.
+ * - The regex-based link rewriting only catches URLs that appear as literal
+ *   text in HTML/CSS/JS. Bundled/minified JS sometimes builds URLs at
+ *   runtime (string concatenation, computed subdomains) which this proxy
+ *   can't see or rewrite, so some requests may still leak straight to the
+ *   real blooket.com and get blocked by the network you're trying to route
+ *   around, or simply fail with a CORS error.
  * - Logging into an account through this proxy is not recommended/supported.
  * - This does not hide who's running the Worker from Cloudflare/Blooket — it
  *   only changes which hostname your local network sees.
- * - Only use this on networks/accounts where you're actually allowed to bypass
- *   the restriction (e.g. your own homelab, or where policy explicitly permits
- *   it). Many school and workplace networks block sites like this deliberately
- *   as a matter of policy, not by accident — check before relying on this.
+ * - Only use this on networks/accounts where you're actually allowed to
+ *   bypass the restriction. Many school and workplace networks block sites
+ *   like this deliberately as a matter of policy, not by accident — check
+ *   before relying on this, and don't use it to get around a restriction
+ *   your school/employer would tell you no to if you asked directly.
  */
 
 function matchesUpstream(hostname) {
@@ -33,7 +41,7 @@ export default {
     const url = new URL(request.url);
 
     // Path-based routing: /v/<target-host>/<rest> lets us proxy the extra
-    // CDN/API subdomains that blooket.com's HTML references.
+    // CDN/API/websocket subdomains that blooket.com's code references.
     let targetHost = "blooket.com";
     let targetPath = url.pathname + url.search;
 
@@ -48,6 +56,22 @@ export default {
     }
 
     const upstreamUrl = `https://${targetHost}${targetPath}`;
+
+    // --- WebSocket upgrade: forward the request as-is and let the Workers
+    // runtime proxy the socket. This is what makes "joining a live game"
+    // possible, since Blooket's game rounds run over a socket connection.
+    const upgradeHeader = request.headers.get("Upgrade");
+    if (upgradeHeader && upgradeHeader.toLowerCase() === "websocket") {
+      const wsHeaders = new Headers(request.headers);
+      wsHeaders.set("Host", targetHost);
+      wsHeaders.set("Origin", "https://blooket.com");
+      wsHeaders.delete("cookie");
+      const wsRequest = new Request(upstreamUrl, {
+        method: request.method,
+        headers: wsHeaders,
+      });
+      return fetch(wsRequest);
+    }
 
     const upstreamHeaders = new Headers(request.headers);
     upstreamHeaders.set("Host", targetHost);
@@ -115,9 +139,19 @@ function rewriteToProxy(link, proxyOrigin) {
 }
 
 function rewriteBody(text, proxyOrigin) {
-  // Rewrite absolute references to blooket.com and its subdomains so
+  const wsOrigin = proxyOrigin.replace(/^http/, "ws");
+
+  // Rewrite absolute http(s) references to blooket.com and its subdomains so
   // subsequent requests (scripts, assets, API calls) also route through the proxy.
-  return text
+  let out = text
     .replace(/https:\/\/(www\.)?blooket\.com/g, proxyOrigin)
     .replace(/https:\/\/([\w-]+)\.blooket\.com/g, (m, sub) => `${proxyOrigin}/v/${sub}.blooket.com`);
+
+  // Rewrite ws(s):// references the same way, so socket connections
+  // (game rounds, live updates) also route through the proxy.
+  out = out
+    .replace(/wss?:\/\/(www\.)?blooket\.com/g, wsOrigin)
+    .replace(/wss?:\/\/([\w-]+)\.blooket\.com/g, (m, sub) => `${wsOrigin}/v/${sub}.blooket.com`);
+
+  return out;
 }
