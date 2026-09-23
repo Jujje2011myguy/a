@@ -36,13 +36,20 @@ function matchesUpstream(hostname) {
   return hostname.endsWith("blooket.com");
 }
 
+// blooket.com (bare, no "www") 301-redirects to www.blooket.com. Fetching the
+// bare domain by default caused the redirect loop: the Worker kept fetching
+// the bare domain, getting redirected to www, collapsing that redirect back
+// down to the same proxy URL, then fetching the bare domain again on the next
+// request. Fetching the canonical host directly avoids that redirect entirely.
+const ROOT_HOST = "www.blooket.com";
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // Path-based routing: /v/<target-host>/<rest> lets us proxy the extra
     // CDN/API/websocket subdomains that blooket.com's code references.
-    let targetHost = "blooket.com";
+    let targetHost = ROOT_HOST;
     let targetPath = url.pathname + url.search;
 
     const vMatch = url.pathname.match(/^\/v\/([^/]+)(\/.*)?$/);
@@ -155,7 +162,7 @@ function rewriteToProxy(link, proxyOrigin) {
   try {
     const u = new URL(link, "https://blooket.com");
     if (matchesUpstream(u.hostname)) {
-      if (u.hostname === "blooket.com" || u.hostname === "www.blooket.com") {
+      if (u.hostname === "blooket.com" || u.hostname === ROOT_HOST) {
         return `${proxyOrigin}${u.pathname}${u.search}`;
       }
       return `${proxyOrigin}/v/${u.hostname}${u.pathname}${u.search}`;
@@ -172,7 +179,7 @@ function rewriteBody(text, proxyOrigin) {
   // Rewrite absolute http(s) references to blooket.com and its subdomains so
   // subsequent requests (scripts, assets, API calls) also route through the proxy.
   let out = text
-    .replace(/https:\/\/(www\.)?blooket\.com/g, proxyOrigin)
+    .replace(/https:\/\/(www\.)?blooket\.com/g, proxyOrigin) // both variants collapse safely now that root fetches ROOT_HOST directly
     .replace(/https:\/\/([\w-]+)\.blooket\.com/g, (m, sub) => `${proxyOrigin}/v/${sub}.blooket.com`);
 
   // Rewrite ws(s):// references the same way, so socket connections
