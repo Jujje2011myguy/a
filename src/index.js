@@ -22,7 +22,7 @@
  */
 
 function matchesUpstream(hostname) {
-  return hostname.endsWith("poki.com");
+  return hostname.endsWith("https://garticphone.com/");
 }
 
 export default {
@@ -31,7 +31,7 @@ export default {
 
     // Path-based routing: /v/<target-host>/<rest> lets us proxy the extra
     // CDN subdomains that poki.com's HTML references.
-    let targetHost = "poki.com";
+    let targetHost = "https://garticphone.com/";
     let targetPath = url.pathname + url.search;
 
     const vMatch = url.pathname.match(/^\/v\/([^/]+)(\/.*)?$/);
@@ -48,8 +48,8 @@ export default {
 
     const upstreamHeaders = new Headers(request.headers);
     upstreamHeaders.set("Host", targetHost);
-    upstreamHeaders.set("Referer", "https://poki.com/");
-    upstreamHeaders.set("Origin", "https://poki.com");
+    upstreamHeaders.set("Referer", "https://garticphone.com/");
+    upstreamHeaders.set("Origin", "https://garticphone.com/");
     upstreamHeaders.delete("cookie"); // don't leak your Worker's own cookies upstream
 
     const upstreamResponse = await fetch(upstreamUrl, {
