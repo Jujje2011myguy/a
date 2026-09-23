@@ -1,29 +1,31 @@
 /**
- * Reverse proxy for garticphone.com, deployed as a Cloudflare Worker.
+ * Reverse proxy for blooket.com, deployed as a Cloudflare Worker.
  *
  * How it works:
  * - Every request to your Worker's URL (e.g. https://yt.yourname.workers.dev/)
- *   is forwarded to the real garticphone.com, with the response streamed back to you.
+ *   is forwarded to the real blooket.com, with the response streamed back to you.
  * - Because the request originates from Cloudflare's network, a network that only
- *   blocks garticphone.com directly will still let you reach your Worker's own domain.
+ *   blocks blooket.com directly will still let you reach your Worker's own domain.
  * - HTML/CSS/JS responses have their internal links rewritten so that further
  *   navigation also stays inside the proxy.
  *
  * Limitations (read before relying on this):
- * - Gartic Phone likely serves assets and websocket traffic from separate CDN/
- *   API subdomains. This proxy forwards subdomain requests too, but websocket
- *   connections (used for live multiplayer rounds) may not work correctly
- *   through a plain HTTP fetch-based proxy like this one — that's a real risk,
- *   not just a maintenance footnote.
+ * - Blooket likely serves assets, API calls, and websocket traffic (live game
+ *   rounds) from separate CDN/API subdomains. This proxy forwards subdomain
+ *   requests too, but websocket connections may not work correctly through a
+ *   plain HTTP fetch-based proxy like this one — that's a real risk, not just
+ *   a maintenance footnote.
  * - Logging into an account through this proxy is not recommended/supported.
- * - This does not hide who's running the Worker from Cloudflare/Gartic Phone —
- *   it only changes which hostname your local network sees.
+ * - This does not hide who's running the Worker from Cloudflare/Blooket — it
+ *   only changes which hostname your local network sees.
  * - Only use this on networks/accounts where you're actually allowed to bypass
- *   the restriction (e.g. your own homelab, or where policy explicitly permits it).
+ *   the restriction (e.g. your own homelab, or where policy explicitly permits
+ *   it). Many school and workplace networks block sites like this deliberately
+ *   as a matter of policy, not by accident — check before relying on this.
  */
 
 function matchesUpstream(hostname) {
-  return hostname.endsWith("garticphone.com");
+  return hostname.endsWith("blooket.com");
 }
 
 export default {
@@ -31,8 +33,8 @@ export default {
     const url = new URL(request.url);
 
     // Path-based routing: /v/<target-host>/<rest> lets us proxy the extra
-    // CDN/API subdomains that garticphone.com's HTML references.
-    let targetHost = "garticphone.com";
+    // CDN/API subdomains that blooket.com's HTML references.
+    let targetHost = "blooket.com";
     let targetPath = url.pathname + url.search;
 
     const vMatch = url.pathname.match(/^\/v\/([^/]+)(\/.*)?$/);
@@ -49,8 +51,8 @@ export default {
 
     const upstreamHeaders = new Headers(request.headers);
     upstreamHeaders.set("Host", targetHost);
-    upstreamHeaders.set("Referer", "https://garticphone.com/");
-    upstreamHeaders.set("Origin", "https://garticphone.com");
+    upstreamHeaders.set("Referer", "https://blooket.com/");
+    upstreamHeaders.set("Origin", "https://blooket.com");
     upstreamHeaders.delete("cookie"); // don't leak your Worker's own cookies upstream
 
     const upstreamResponse = await fetch(upstreamUrl, {
@@ -67,7 +69,7 @@ export default {
     responseHeaders.delete("x-frame-options");
 
     // Follow redirects manually so we can rewrite the Location header back
-    // through the proxy instead of leaking the real garticphone.com URL.
+    // through the proxy instead of leaking the real blooket.com URL.
     if ([301, 302, 303, 307, 308].includes(upstreamResponse.status)) {
       const loc = upstreamResponse.headers.get("location");
       if (loc) {
@@ -99,9 +101,9 @@ export default {
 
 function rewriteToProxy(link, proxyOrigin) {
   try {
-    const u = new URL(link, "https://garticphone.com");
+    const u = new URL(link, "https://blooket.com");
     if (matchesUpstream(u.hostname)) {
-      if (u.hostname === "garticphone.com" || u.hostname === "www.garticphone.com") {
+      if (u.hostname === "blooket.com" || u.hostname === "www.blooket.com") {
         return `${proxyOrigin}${u.pathname}${u.search}`;
       }
       return `${proxyOrigin}/v/${u.hostname}${u.pathname}${u.search}`;
@@ -113,9 +115,9 @@ function rewriteToProxy(link, proxyOrigin) {
 }
 
 function rewriteBody(text, proxyOrigin) {
-  // Rewrite absolute references to garticphone.com and its subdomains so
+  // Rewrite absolute references to blooket.com and its subdomains so
   // subsequent requests (scripts, assets, API calls) also route through the proxy.
   return text
-    .replace(/https:\/\/(www\.)?garticphone\.com/g, proxyOrigin)
-    .replace(/https:\/\/([\w-]+)\.garticphone\.com/g, (m, sub) => `${proxyOrigin}/v/${sub}.garticphone.com`);
+    .replace(/https:\/\/(www\.)?blooket\.com/g, proxyOrigin)
+    .replace(/https:\/\/([\w-]+)\.blooket\.com/g, (m, sub) => `${proxyOrigin}/v/${sub}.blooket.com`);
 }
