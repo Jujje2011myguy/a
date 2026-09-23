@@ -1,44 +1,28 @@
 /**
- * Reverse proxy for YouTube, deployed as a Cloudflare Worker.
+ * Reverse proxy for poki.com, deployed as a Cloudflare Worker.
  *
  * How it works:
- * - Every request to your Worker's URL (e.g. https://yt.yourname.workers.dev/watch?v=xyz)
- *   is forwarded to the real youtube.com, with the response streamed back to you.
+ * - Every request to your Worker's URL (e.g. https://yt.yourname.workers.dev/)
+ *   is forwarded to the real poki.com, with the response streamed back to you.
  * - Because the request originates from Cloudflare's network, a network that only
- *   blocks youtube.com directly will still let you reach your Worker's own domain.
+ *   blocks poki.com directly will still let you reach your Worker's own domain.
  * - HTML/CSS/JS responses have their internal links rewritten so that further
  *   navigation also stays inside the proxy.
  *
  * Limitations (read before relying on this):
- * - YouTube serves video/audio data from separate domains (googlevideo.com,
- *   ytimg.com, ggpht.com, etc.). This proxy also forwards those so playback works,
- *   but Google actively changes response formats and may rate-limit or block
- *   traffic that looks like a proxy. Expect occasional breakage.
- * - Logging into a Google account through this proxy is not recommended/supported.
- * - This does not hide who's running the Worker from Cloudflare/Google — it only
+ * - Poki serves game assets from separate CDN domains (img.poki.com,
+ *   game-cdn.poki.com, etc.). This proxy forwards those too so games load
+ *   properly, but the asset host list may need updating over time if Poki
+ *   changes its CDN setup.
+ * - Logging into an account through this proxy is not recommended/supported.
+ * - This does not hide who's running the Worker from Cloudflare/Poki — it only
  *   changes which hostname your local network sees.
  * - Only use this on networks/accounts where you're actually allowed to bypass
  *   the restriction (e.g. your own homelab, or where policy explicitly permits it).
  */
 
-const UPSTREAM_HOSTS = [
-  "www.youtube.com",
-  "youtube.com",
-  "m.youtube.com",
-  "i.ytimg.com",
-  "yt3.ggpht.com",
-  "yt4.ggpht.com",
-  "googlevideo.com",
-  "*.googlevideo.com",
-];
-
 function matchesUpstream(hostname) {
-  return (
-    hostname.endsWith("youtube.com") ||
-    hostname.endsWith("ytimg.com") ||
-    hostname.endsWith("ggpht.com") ||
-    hostname.endsWith("googlevideo.com")
-  );
+  return hostname.endsWith("poki.com");
 }
 
 export default {
@@ -46,8 +30,8 @@ export default {
     const url = new URL(request.url);
 
     // Path-based routing: /v/<target-host>/<rest> lets us proxy the extra
-    // domains (video CDN, thumbnails) that youtube.com's HTML references.
-    let targetHost = "www.youtube.com";
+    // CDN subdomains that poki.com's HTML references.
+    let targetHost = "poki.com";
     let targetPath = url.pathname + url.search;
 
     const vMatch = url.pathname.match(/^\/v\/([^/]+)(\/.*)?$/);
@@ -64,8 +48,8 @@ export default {
 
     const upstreamHeaders = new Headers(request.headers);
     upstreamHeaders.set("Host", targetHost);
-    upstreamHeaders.set("Referer", "https://www.youtube.com/");
-    upstreamHeaders.set("Origin", "https://www.youtube.com");
+    upstreamHeaders.set("Referer", "https://poki.com/");
+    upstreamHeaders.set("Origin", "https://poki.com");
     upstreamHeaders.delete("cookie"); // don't leak your Worker's own cookies upstream
 
     const upstreamResponse = await fetch(upstreamUrl, {
@@ -82,7 +66,7 @@ export default {
     responseHeaders.delete("x-frame-options");
 
     // Follow redirects manually so we can rewrite the Location header back
-    // through the proxy instead of leaking the real youtube.com URL.
+    // through the proxy instead of leaking the real poki.com URL.
     if ([301, 302, 303, 307, 308].includes(upstreamResponse.status)) {
       const loc = upstreamResponse.headers.get("location");
       if (loc) {
@@ -95,7 +79,7 @@ export default {
       });
     }
 
-    // Only rewrite text-based bodies; stream everything else (video, images) as-is.
+    // Only rewrite text-based bodies; stream everything else (games, images) as-is.
     if (contentType.includes("text/html") || contentType.includes("javascript") || contentType.includes("text/css")) {
       let body = await upstreamResponse.text();
       body = rewriteBody(body, url.origin);
@@ -114,9 +98,9 @@ export default {
 
 function rewriteToProxy(link, proxyOrigin) {
   try {
-    const u = new URL(link, "https://www.youtube.com");
+    const u = new URL(link, "https://poki.com");
     if (matchesUpstream(u.hostname)) {
-      if (u.hostname === "www.youtube.com" || u.hostname === "youtube.com" || u.hostname === "m.youtube.com") {
+      if (u.hostname === "poki.com" || u.hostname === "www.poki.com") {
         return `${proxyOrigin}${u.pathname}${u.search}`;
       }
       return `${proxyOrigin}/v/${u.hostname}${u.pathname}${u.search}`;
@@ -128,11 +112,9 @@ function rewriteToProxy(link, proxyOrigin) {
 }
 
 function rewriteBody(text, proxyOrigin) {
-  // Rewrite absolute references to the known upstream hosts so subsequent
-  // requests (images, scripts, video chunks) also route through the proxy.
+  // Rewrite absolute references to poki.com and its subdomains so subsequent
+  // requests (images, scripts, game assets) also route through the proxy.
   return text
-    .replace(/https:\/\/(www\.|m\.)?youtube\.com/g, proxyOrigin)
-    .replace(/https:\/\/i\.ytimg\.com/g, `${proxyOrigin}/v/i.ytimg.com`)
-    .replace(/https:\/\/([\w-]+\.)?googlevideo\.com/g, (m, sub) => `${proxyOrigin}/v/${sub || ""}googlevideo.com`)
-    .replace(/https:\/\/(yt3|yt4)\.ggpht\.com/g, (m, sub) => `${proxyOrigin}/v/${sub}.ggpht.com`);
+    .replace(/https:\/\/(www\.)?poki\.com/g, proxyOrigin)
+    .replace(/https:\/\/([\w-]+)\.poki\.com/g, (m, sub) => `${proxyOrigin}/v/${sub}.poki.com`);
 }
