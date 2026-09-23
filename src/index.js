@@ -65,7 +65,6 @@ export default {
       const wsHeaders = new Headers(request.headers);
       wsHeaders.set("Host", targetHost);
       wsHeaders.set("Origin", "https://blooket.com");
-      wsHeaders.delete("cookie");
       const wsRequest = new Request(upstreamUrl, {
         method: request.method,
         headers: wsHeaders,
@@ -77,7 +76,10 @@ export default {
     upstreamHeaders.set("Host", targetHost);
     upstreamHeaders.set("Referer", "https://blooket.com/");
     upstreamHeaders.set("Origin", "https://blooket.com");
-    upstreamHeaders.delete("cookie"); // don't leak your Worker's own cookies upstream
+    // Forward the visitor's cookies upstream so Blooket can maintain a
+    // session. Dropping these was causing an infinite redirect loop: Blooket
+    // kept trying to (re)set a session cookie on every request because it
+    // never saw one coming back.
 
     const upstreamResponse = await fetch(upstreamUrl, {
       method: request.method,
@@ -91,6 +93,21 @@ export default {
     responseHeaders.set("Access-Control-Allow-Origin", "*");
     responseHeaders.delete("content-security-policy");
     responseHeaders.delete("x-frame-options");
+
+    // Rewrite Set-Cookie so cookies are scoped to the proxy's own domain
+    // instead of blooket.com (the browser silently drops a Domain= that
+    // doesn't match the site it's actually visiting, which is what caused
+    // the redirect loop).
+    responseHeaders.delete("set-cookie");
+    const setCookies =
+      typeof upstreamResponse.headers.getSetCookie === "function"
+        ? upstreamResponse.headers.getSetCookie()
+        : upstreamResponse.headers.get("set-cookie")
+        ? [upstreamResponse.headers.get("set-cookie")]
+        : [];
+    for (const cookie of setCookies) {
+      responseHeaders.append("set-cookie", rewriteSetCookie(cookie));
+    }
 
     // Follow redirects manually so we can rewrite the Location header back
     // through the proxy instead of leaking the real blooket.com URL.
@@ -122,6 +139,17 @@ export default {
     });
   },
 };
+
+function rewriteSetCookie(setCookieHeader) {
+  // Strip the Domain attribute (so the cookie becomes host-only and sticks
+  // to the proxy's own domain) and force Path=/ so it's sent on every
+  // proxied path, including /v/<subdomain>/... requests.
+  let cookie = setCookieHeader.replace(/;\s*Domain=[^;]*/i, "");
+  cookie = /;\s*Path=/i.test(cookie)
+    ? cookie.replace(/;\s*Path=[^;]*/i, "; Path=/")
+    : cookie + "; Path=/";
+  return cookie;
+}
 
 function rewriteToProxy(link, proxyOrigin) {
   try {
