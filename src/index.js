@@ -1,70 +1,73 @@
 /**
- * Reverse proxy for blooket.com, deployed as a Cloudflare Worker.
+ * Reverse proxy for YouTube, deployed as a Cloudflare Worker.
  *
  * How it works:
- * - Every request to your Worker's URL (e.g. https://yt.yourname.workers.dev/)
- *   is forwarded to the real blooket.com, with the response streamed back to you.
- * - WebSocket connections (used for live game rounds / joining a game) are now
- *   proxied too, by forwarding the Upgrade request straight through to upstream.
- * - HTML/CSS/JS responses have their internal links rewritten (including ws://
- *   and wss:// URLs) so that further navigation and socket connections also
- *   stay inside the proxy.
+ * - Every request to your Worker's URL (e.g. https://yt.yourname.workers.dev/watch?v=xyz)
+ *   is forwarded to the real youtube.com, with the response streamed back to you.
+ * - Because the request originates from Cloudflare's network, a network that only
+ *   blocks youtube.com directly will still let you reach your Worker's own domain.
+ * - HTML/CSS/JS responses have their internal links rewritten (including
+ *   protocol-relative and JSON-escaped URLs embedded in YouTube's page data)
+ *   so further navigation and playback stay inside the proxy.
+ * - Cookies are forwarded in both directions, scoped to your Worker's own
+ *   domain, so YouTube sees a consistent anonymous session across requests
+ *   instead of a brand new "visitor" on every click. This is what cuts down
+ *   on repeated consent/verification interstitials.
  *
- * READ THIS BEFORE USING:
- * - Blooket sits behind Cloudflare itself. Requests from a Worker don't carry
- *   the TLS/browser fingerprint a normal visitor has, so Blooket's own
- *   anti-bot layer can serve a challenge page instead of the real site. If
- *   the page still won't load after this update, that's almost certainly why,
- *   and there's no reliable fix for it from inside a Worker.
- * - The regex-based link rewriting only catches URLs that appear as literal
- *   text in HTML/CSS/JS. Bundled/minified JS sometimes builds URLs at
- *   runtime (string concatenation, computed subdomains) which this proxy
- *   can't see or rewrite, so some requests may still leak straight to the
- *   real blooket.com and get blocked by the network you're trying to route
- *   around, or simply fail with a CORS error.
- * - Logging into an account through this proxy is not recommended/supported.
- * - This does not hide who's running the Worker from Cloudflare/Blooket — it
- *   only changes which hostname your local network sees.
- * - Only use this on networks/accounts where you're actually allowed to
- *   bypass the restriction. Many school and workplace networks block sites
- *   like this deliberately as a matter of policy, not by accident — check
- *   before relying on this, and don't use it to get around a restriction
- *   your school/employer would tell you no to if you asked directly.
+ * Limitations (read before relying on this):
+ * - YouTube serves video/audio data from separate domains (googlevideo.com,
+ *   ytimg.com, ggpht.com, etc.). This proxy also forwards those so playback works,
+ *   but Google actively changes response formats and may rate-limit or block
+ *   traffic that looks like a proxy. Expect occasional breakage.
+ * - Logging into an actual Google account through this proxy is NOT supported
+ *   and won't be made to work reliably — Google's device/session verification
+ *   is specifically designed to detect and block this pattern. This proxy is
+ *   for anonymous viewing only.
+ * - This does not hide who's running the Worker from Cloudflare/Google — it only
+ *   changes which hostname your local network sees.
+ * - Only use this on networks/accounts where you're actually allowed to bypass
+ *   the restriction (e.g. your own homelab, or where policy explicitly permits it).
  */
 
 function matchesUpstream(hostname) {
-  return hostname.endsWith("blooket.com");
+  return (
+    hostname.endsWith("youtube.com") ||
+    hostname.endsWith("ytimg.com") ||
+    hostname.endsWith("ggpht.com") ||
+    hostname.endsWith("googlevideo.com")
+  );
 }
 
-// blooket.com (bare, no "www") 301-redirects to www.blooket.com. Fetching the
-// bare domain by default caused the redirect loop: the Worker kept fetching
-// the bare domain, getting redirected to www, collapsing that redirect back
-// down to the same proxy URL, then fetching the bare domain again on the next
-// request. Fetching the canonical host directly avoids that redirect entirely.
-const ROOT_HOST = "www.blooket.com";
+function canonicalHost(hostname) {
+  // Normalize the various youtube.com subdomains to a single canonical one
+  // so cookies/session state aren't fragmented across www/m/bare.
+  if (hostname === "www.youtube.com" || hostname === "youtube.com" || hostname === "m.youtube.com") {
+    return "www.youtube.com";
+  }
+  return hostname;
+}
 
 export default {
   async fetch(request, env, ctx) {
-    try {
-      return await handleRequest(request);
-    } catch (err) {
-      // Surface the real error instead of a bare, unhelpful 500 page.
-      return new Response(`Proxy error: ${err && err.stack ? err.stack : err}`, {
-        status: 500,
-        headers: { "content-type": "text/plain" },
-      });
-    }
-  },
-};
-
-async function handleRequest(request) {
     const url = new URL(request.url);
 
-    // Path-based routing: /v/<target-host>/<rest> lets us proxy the extra
-    // CDN/API/websocket subdomains that blooket.com's code references.
-    let targetHost = ROOT_HOST;
+    // CORS preflight — answer locally, don't forward to YouTube.
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET,HEAD,POST,OPTIONS",
+          "Access-Control-Allow-Headers": "*",
+        },
+      });
+    }
+
+    let targetHost = "www.youtube.com";
     let targetPath = url.pathname + url.search;
 
+    // Path-based routing: /v/<target-host>/<rest> lets us proxy the extra
+    // domains (video CDN, thumbnails) that youtube.com's HTML references.
     const vMatch = url.pathname.match(/^\/v\/([^/]+)(\/.*)?$/);
     if (vMatch) {
       targetHost = vMatch[1];
@@ -75,76 +78,66 @@ async function handleRequest(request) {
       return new Response("Blocked host", { status: 403 });
     }
 
+    targetHost = canonicalHost(targetHost);
     const upstreamUrl = `https://${targetHost}${targetPath}`;
-
-    // --- WebSocket upgrade: forward the request as-is and let the Workers
-    // runtime proxy the socket. This is what makes "joining a live game"
-    // possible, since Blooket's game rounds run over a socket connection.
-    const upgradeHeader = request.headers.get("Upgrade");
-    if (upgradeHeader && upgradeHeader.toLowerCase() === "websocket") {
-      const wsHeaders = new Headers(request.headers);
-      wsHeaders.set("Host", targetHost);
-      wsHeaders.set("Origin", "https://blooket.com");
-      const wsRequest = new Request(upstreamUrl, {
-        method: request.method,
-        headers: wsHeaders,
-      });
-      return fetch(wsRequest);
-    }
 
     const upstreamHeaders = new Headers(request.headers);
     upstreamHeaders.set("Host", targetHost);
-    upstreamHeaders.set("Referer", "https://blooket.com/");
-    upstreamHeaders.set("Origin", "https://blooket.com");
-    // Forward the visitor's cookies upstream so Blooket can maintain a
-    // session. Dropping these was causing an infinite redirect loop: Blooket
-    // kept trying to (re)set a session cookie on every request because it
-    // never saw one coming back.
+    upstreamHeaders.set("Referer", "https://www.youtube.com/");
+    upstreamHeaders.set("Origin", "https://www.youtube.com");
+    upstreamHeaders.delete("cookie");
 
-    // POST/PUT requests (like actually joining a game) forward a streaming
-    // body. Cloudflare Workers require "duplex: half" whenever a streaming
-    // body is passed to fetch(), or it throws immediately and you get a bare
-    // 500 with no useful message — that was causing the join request to fail.
-    const upstreamInit = {
-      method: request.method,
-      headers: upstreamHeaders,
-      redirect: "manual",
-    };
-    if (!["GET", "HEAD"].includes(request.method)) {
-      upstreamInit.body = request.body;
-      upstreamInit.duplex = "half";
+    // Forward the browser's cookies (set by *this* proxy on earlier
+    // responses) up to YouTube, so a session persists across requests
+    // instead of looking like a fresh visitor every time.
+    const incomingCookie = request.headers.get("cookie");
+    if (incomingCookie) {
+      upstreamHeaders.set("cookie", incomingCookie);
     }
-    const upstreamResponse = await fetch(upstreamUrl, upstreamInit);
-    console.log(upstreamUrl, upstreamResponse.status, upstreamResponse.headers.get("cf-mitigated"));
+
+    let upstreamResponse;
+    try {
+      upstreamResponse = await fetch(upstreamUrl, {
+        method: request.method,
+        headers: upstreamHeaders,
+        body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+        redirect: "manual",
+      });
+    } catch (err) {
+      return new Response(`Upstream fetch failed: ${err.message}`, { status: 502 });
+    }
 
     const contentType = upstreamResponse.headers.get("content-type") || "";
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.set("Access-Control-Allow-Origin", "*");
     responseHeaders.delete("content-security-policy");
+    responseHeaders.delete("content-security-policy-report-only");
     responseHeaders.delete("x-frame-options");
+    responseHeaders.delete("strict-transport-security");
 
-    // Rewrite Set-Cookie so cookies are scoped to the proxy's own domain
-    // instead of blooket.com (the browser silently drops a Domain= that
-    // doesn't match the site it's actually visiting, which is what caused
-    // the redirect loop).
-    responseHeaders.delete("set-cookie");
-    const setCookies =
-      typeof upstreamResponse.headers.getSetCookie === "function"
-        ? upstreamResponse.headers.getSetCookie()
-        : upstreamResponse.headers.get("set-cookie")
-        ? [upstreamResponse.headers.get("set-cookie")]
-        : [];
-    for (const cookie of setCookies) {
-      responseHeaders.append("set-cookie", rewriteSetCookie(cookie));
+    // Rewrite Set-Cookie so cookies land on the proxy's own domain, not
+    // youtube.com (the browser would silently drop them otherwise), and
+    // strip attributes that don't make sense cross-origin.
+    if (typeof responseHeaders.getSetCookie === "function") {
+      const setCookies = responseHeaders.getSetCookie();
+      if (setCookies.length) {
+        responseHeaders.delete("set-cookie");
+        for (const cookie of setCookies) {
+          const rewritten = cookie
+            .replace(/;\s*[Dd]omain=[^;]*/g, "")
+            .replace(/;\s*[Ss]ecure/g, "")
+            .replace(/;\s*[Ss]ameSite=\w+/gi, "; SameSite=Lax");
+          responseHeaders.append("set-cookie", rewritten);
+        }
+      }
     }
 
     // Follow redirects manually so we can rewrite the Location header back
-    // through the proxy instead of leaking the real blooket.com URL.
+    // through the proxy instead of leaking the real youtube.com URL.
     if ([301, 302, 303, 307, 308].includes(upstreamResponse.status)) {
       const loc = upstreamResponse.headers.get("location");
       if (loc) {
-        const rewritten = rewriteToProxy(loc, url.origin);
-        responseHeaders.set("location", rewritten);
+        responseHeaders.set("location", rewriteToProxy(loc, url.origin));
       }
       return new Response(null, {
         status: upstreamResponse.status,
@@ -152,38 +145,44 @@ async function handleRequest(request) {
       });
     }
 
-    // Only rewrite text-based bodies; stream everything else as-is.
-    if (contentType.includes("text/html") || contentType.includes("javascript") || contentType.includes("text/css")) {
+    // Only rewrite text-based bodies; stream everything else (video, images) as-is.
+    const isRewritable =
+      contentType.includes("text/html") ||
+      contentType.includes("javascript") ||
+      contentType.includes("text/css") ||
+      contentType.includes("application/json");
+
+    if (isRewritable) {
       let body = await upstreamResponse.text();
       body = rewriteBody(body, url.origin);
+      // Body was decoded by fetch() and re-encoded as plain text below, so
+      // the original content-encoding/content-length headers no longer
+      // describe it. Leaving them in place causes browsers to try to
+      // gzip/brotli-decode an already-decoded body and fail.
+      responseHeaders.delete("content-encoding");
+      responseHeaders.delete("content-length");
       return new Response(body, {
         status: upstreamResponse.status,
         headers: responseHeaders,
       });
     }
 
+    // Binary/streamed passthrough (video chunks, images, fonts). Range
+    // requests are forwarded automatically since we copy request.headers,
+    // and 206 Partial Content responses pass straight through here.
     return new Response(upstreamResponse.body, {
       status: upstreamResponse.status,
       headers: responseHeaders,
     });
-}
-
-function rewriteSetCookie(setCookieHeader) {
-  // Strip the Domain attribute (so the cookie becomes host-only and sticks
-  // to the proxy's own domain) and force Path=/ so it's sent on every
-  // proxied path, including /v/<subdomain>/... requests.
-  let cookie = setCookieHeader.replace(/;\s*Domain=[^;]*/i, "");
-  cookie = /;\s*Path=/i.test(cookie)
-    ? cookie.replace(/;\s*Path=[^;]*/i, "; Path=/")
-    : cookie + "; Path=/";
-  return cookie;
-}
+  },
+};
 
 function rewriteToProxy(link, proxyOrigin) {
   try {
-    const u = new URL(link, "https://blooket.com");
+    const u = new URL(link, "https://www.youtube.com");
     if (matchesUpstream(u.hostname)) {
-      if (u.hostname === "blooket.com" || u.hostname === ROOT_HOST) {
+      const host = canonicalHost(u.hostname);
+      if (host === "www.youtube.com") {
         return `${proxyOrigin}${u.pathname}${u.search}`;
       }
       return `${proxyOrigin}/v/${u.hostname}${u.pathname}${u.search}`;
@@ -195,19 +194,27 @@ function rewriteToProxy(link, proxyOrigin) {
 }
 
 function rewriteBody(text, proxyOrigin) {
-  const wsOrigin = proxyOrigin.replace(/^http/, "ws");
+  // Escaped variant of the proxy origin for use inside JSON-string
+  // replacements (e.g. embedded in ytInitialData / ytInitialPlayerResponse).
+  const escapedOrigin = proxyOrigin.replace(/\//g, "\\/");
 
-  // Rewrite absolute http(s) references to blooket.com and its subdomains so
-  // subsequent requests (scripts, assets, API calls) also route through the proxy.
-  let out = text
-    .replace(/https:\/\/(www\.)?blooket\.com/g, proxyOrigin) // both variants collapse safely now that root fetches ROOT_HOST directly
-    .replace(/https:\/\/([\w-]+)\.blooket\.com/g, (m, sub) => `${proxyOrigin}/v/${sub}.blooket.com`);
-
-  // Rewrite ws(s):// references the same way, so socket connections
-  // (game rounds, live updates) also route through the proxy.
-  out = out
-    .replace(/wss?:\/\/(www\.)?blooket\.com/g, wsOrigin)
-    .replace(/wss?:\/\/([\w-]+)\.blooket\.com/g, (m, sub) => `${wsOrigin}/v/${sub}.blooket.com`);
-
-  return out;
+  return (
+    text
+      // Plain absolute URLs.
+      .replace(/https:\/\/(www\.|m\.)?youtube\.com/g, proxyOrigin)
+      .replace(/https:\/\/i\.ytimg\.com/g, `${proxyOrigin}/v/i.ytimg.com`)
+      .replace(/https:\/\/([\w-]+\.)?googlevideo\.com/g, (m, sub) => `${proxyOrigin}/v/${sub || ""}googlevideo.com`)
+      .replace(/https:\/\/(yt3|yt4)\.ggpht\.com/g, (m, sub) => `${proxyOrigin}/v/${sub}.ggpht.com`)
+      // JSON-escaped URLs (\/\/ style), common inside inline <script> data blobs.
+      .replace(/https:\\\/\\\/(www\.|m\.)?youtube\.com/g, escapedOrigin)
+      .replace(/https:\\\/\\\/i\.ytimg\.com/g, `${escapedOrigin}\\/v\\/i.ytimg.com`)
+      .replace(
+        /https:\\\/\\\/([\w-]+\.)?googlevideo\.com/g,
+        (m, sub) => `${escapedOrigin}\\/v\\/${sub || ""}googlevideo.com`
+      )
+      .replace(/https:\\\/\\\/(yt3|yt4)\.ggpht\.com/g, (m, sub) => `${escapedOrigin}\\/v\\/${sub}.ggpht.com`)
+      // Protocol-relative URLs.
+      .replace(/\/\/(www\.|m\.)?youtube\.com/g, proxyOrigin)
+      .replace(/\/\/i\.ytimg\.com/g, `${proxyOrigin}/v/i.ytimg.com`)
+  );
 }
