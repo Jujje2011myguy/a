@@ -2,19 +2,3 @@ name = "yt-proxy"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 
-# After deploying once, your proxy is live at:
-#   https://yt-proxy.<your-cloudflare-subdomain>.workers.dev
-#
-# Optional: attach it to your own domain instead, via a Cloudflare "route"
-# or a custom domain binding in the Cloudflare dashboard.
-
-[observability.logs]
-enabled = true
-head_sampling_rate = 1
-invocation_logs = true
-persist = true
-
-[observability.traces]
-enabled = false
-head_sampling_rate = 1
-persist = true
