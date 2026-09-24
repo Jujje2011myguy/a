@@ -45,6 +45,19 @@ const ROOT_HOST = "www.blooket.com";
 
 export default {
   async fetch(request, env, ctx) {
+    try {
+      return await handleRequest(request);
+    } catch (err) {
+      // Surface the real error instead of a bare, unhelpful 500 page.
+      return new Response(`Proxy error: ${err && err.stack ? err.stack : err}`, {
+        status: 500,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+  },
+};
+
+async function handleRequest(request) {
     const url = new URL(request.url);
 
     // Path-based routing: /v/<target-host>/<rest> lets us proxy the extra
@@ -88,12 +101,20 @@ export default {
     // kept trying to (re)set a session cookie on every request because it
     // never saw one coming back.
 
-    const upstreamResponse = await fetch(upstreamUrl, {
+    // POST/PUT requests (like actually joining a game) forward a streaming
+    // body. Cloudflare Workers require "duplex: half" whenever a streaming
+    // body is passed to fetch(), or it throws immediately and you get a bare
+    // 500 with no useful message — that was causing the join request to fail.
+    const upstreamInit = {
       method: request.method,
       headers: upstreamHeaders,
-      body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
       redirect: "manual",
-    });
+    };
+    if (!["GET", "HEAD"].includes(request.method)) {
+      upstreamInit.body = request.body;
+      upstreamInit.duplex = "half";
+    }
+    const upstreamResponse = await fetch(upstreamUrl, upstreamInit);
 
     const contentType = upstreamResponse.headers.get("content-type") || "";
     const responseHeaders = new Headers(upstreamResponse.headers);
@@ -144,8 +165,7 @@ export default {
       status: upstreamResponse.status,
       headers: responseHeaders,
     });
-  },
-};
+}
 
 function rewriteSetCookie(setCookieHeader) {
   // Strip the Domain attribute (so the cookie becomes host-only and sticks
