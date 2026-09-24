@@ -21,7 +21,8 @@
  *   the restriction (e.g. your own homelab, or where policy explicitly permits it).
  */
 
-const UPSTREAM_HOSTS = [
+// Exact hosts that are always allowed.
+const EXACT_UPSTREAM_HOSTS = new Set([
   "www.youtube.com",
   "youtube.com",
   "m.youtube.com",
@@ -29,17 +30,23 @@ const UPSTREAM_HOSTS = [
   "yt3.ggpht.com",
   "yt4.ggpht.com",
   "googlevideo.com",
-  "*.googlevideo.com",
-];
+]);
+
+// Parent domains whose subdomains are also allowed (e.g. rr1---sn-xyz.googlevideo.com).
+const SUFFIX_UPSTREAM_HOSTS = [".youtube.com", ".ytimg.com", ".ggpht.com", ".googlevideo.com"];
 
 function matchesUpstream(hostname) {
-  return (
-    hostname.endsWith("youtube.com") ||
-    hostname.endsWith("ytimg.com") ||
-    hostname.endsWith("ggpht.com") ||
-    hostname.endsWith("googlevideo.com")
-  );
+  hostname = hostname.toLowerCase();
+  if (EXACT_UPSTREAM_HOSTS.has(hostname)) return true;
+  // Use a strict suffix check (leading dot) so "notyoutube.com" or
+  // "youtube.com.evil.example" can't slip through a naive endsWith() check.
+  return SUFFIX_UPSTREAM_HOSTS.some((suffix) => hostname.endsWith(suffix));
 }
+
+// Headers that must never be copied straight through to the rewritten
+// response because the body length/encoding no longer matches them once
+// we've decoded and re-encoded the text, or because they leak proxy info.
+const STRIP_RESPONSE_HEADERS = ["content-length", "content-encoding", "transfer-encoding"];
 
 export default {
   async fetch(request, env, ctx) {
@@ -68,17 +75,23 @@ export default {
     upstreamHeaders.set("Origin", "https://www.youtube.com");
     upstreamHeaders.delete("cookie"); // don't leak your Worker's own cookies upstream
 
-    const upstreamResponse = await fetch(upstreamUrl, {
-      method: request.method,
-      headers: upstreamHeaders,
-      body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
-      redirect: "manual",
-    });
+    let upstreamResponse;
+    try {
+      upstreamResponse = await fetch(upstreamUrl, {
+        method: request.method,
+        headers: upstreamHeaders,
+        body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+        redirect: "manual",
+      });
+    } catch (err) {
+      return new Response(`Upstream fetch failed: ${err.message}`, { status: 502 });
+    }
 
     const contentType = upstreamResponse.headers.get("content-type") || "";
     const responseHeaders = new Headers(upstreamResponse.headers);
     responseHeaders.set("Access-Control-Allow-Origin", "*");
     responseHeaders.delete("content-security-policy");
+    responseHeaders.delete("content-security-policy-report-only");
     responseHeaders.delete("x-frame-options");
 
     // Follow redirects manually so we can rewrite the Location header back
@@ -97,8 +110,19 @@ export default {
 
     // Only rewrite text-based bodies; stream everything else (video, images) as-is.
     if (contentType.includes("text/html") || contentType.includes("javascript") || contentType.includes("text/css")) {
-      let body = await upstreamResponse.text();
+      let body;
+      try {
+        body = await upstreamResponse.text();
+      } catch (err) {
+        return new Response(`Failed to read upstream body: ${err.message}`, { status: 502 });
+      }
       body = rewriteBody(body, url.origin);
+
+      // The body length changed once we decoded/rewrote it, so the original
+      // Content-Length/Content-Encoding headers no longer apply. Leaving them
+      // in place can cause clients to truncate or hang waiting for more bytes.
+      for (const h of STRIP_RESPONSE_HEADERS) responseHeaders.delete(h);
+
       return new Response(body, {
         status: upstreamResponse.status,
         headers: responseHeaders,
