@@ -115,6 +115,7 @@ async function handleRequest(request) {
       upstreamInit.duplex = "half";
     }
     const upstreamResponse = await fetch(upstreamUrl, upstreamInit);
+    console.log(upstreamUrl, upstreamResponse.status, upstreamResponse.headers.get("cf-mitigated"));
 
     const contentType = upstreamResponse.headers.get("content-type") || "";
     const responseHeaders = new Headers(upstreamResponse.headers);
